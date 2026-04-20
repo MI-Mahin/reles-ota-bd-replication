@@ -1,0 +1,7 @@
+gymnasium==1.0.0
+numpy
+stable-baselines3[extra]
+torch
+pandas
+matplotlib
+seaborn
