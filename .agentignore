@@ -1,0 +1,18 @@
+# Ignore large/generated files for AI context
+results/
+*.pt
+*.pth
+__pycache__/
+*.log
+venv/
+.env
+bd_params.json  # if it contains real data later, but keep for now
+*.pdf
+*.parquet
+
+# Keep these for context
+!README.md
+!requirements.txt
+!ota_env.py
+!train_ppo.py
+!baselines.py
