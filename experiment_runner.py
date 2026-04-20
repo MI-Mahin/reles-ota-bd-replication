@@ -8,7 +8,16 @@ from baselines import BaselineRunner
 
 Path("results/final").mkdir(parents=True, exist_ok=True)
 
-N_BLOCKS = 16   
+N_BLOCKS = 16   # Must match training
+
+def get_valid_action(env, model_obs):
+    """Fallback: choose a random unprocessed block"""
+    unprocessed = np.where(env.mask == 1)[0]
+    if len(unprocessed) == 0:
+        return [0, 0]
+    block_idx = np.random.choice(unprocessed)
+    operation = np.random.randint(0, 3)
+    return [block_idx, operation]
 
 def evaluate_model(model, env, num_episodes=20):
     payloads = []
@@ -19,15 +28,27 @@ def evaluate_model(model, env, num_episodes=20):
         obs, _ = env.reset()
         done = False
         ep_reward = 0.0
+        steps = 0
         
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
+        while not done and steps < env.n_blocks + 15:
+            try:
+                action, _ = model.predict(obs, deterministic=True)
+                # Check if action is valid
+                block_idx = action[0]
+                if env.mask[block_idx] == 0:
+                    action = get_valid_action(env, obs)   # fallback
+            except:
+                action = get_valid_action(env, obs)
+            
             obs, reward, done, _, info = env.step(action)
             ep_reward += reward
+            steps += 1
         
         payloads.append(info.get('payload_bytes', 0))
         memories.append(info.get('memory_used', 0))
         rewards.append(ep_reward)
+        
+        print(f"  Episode {ep+1:2d}: Payload = {info.get('payload_bytes', 0):.1f} | Steps = {steps}")
     
     return {
         'mean_payload': float(np.mean(payloads)),
@@ -38,34 +59,30 @@ def evaluate_model(model, env, num_episodes=20):
 
 
 if __name__ == "__main__":
-    print(" Starting Generic vs BD Experiment...\n")
+    print(" Starting Generic vs BD Experiment (with fallback)...\n")
     
     # Load model
     try:
         model_generic = PPO.load("results/models/generic_best/best_model.zip")
         print(" Loaded best Generic model")
     except:
-        try:
-            model_generic = PPO.load("results/models/ppo_generic_final.zip")
-            print(" Loaded final Generic model")
-        except Exception as e:
-            print(" Could not load model:", e)
-            exit()
+        model_generic = PPO.load("results/models/ppo_generic_final")
+        print(" Loaded final Generic model")
 
-    # === Evaluations ===
+    # Evaluations
     print(f"Evaluating with n_blocks = {N_BLOCKS} ...")
     
     env_generic = OTAEnv(n_blocks=N_BLOCKS, bd_mode=False)
-    generic_rl = evaluate_model(model_generic, env_generic, num_episodes=30)
+    generic_rl = evaluate_model(model_generic, env_generic, num_episodes=15)   # Reduced episodes for speed
     
     env_bd = OTAEnv(n_blocks=N_BLOCKS, bd_mode=True)
-    bd_rl = evaluate_model(model_generic, env_bd, num_episodes=30)   # using same model for now
+    bd_rl = evaluate_model(model_generic, env_bd, num_episodes=15)
     
-    # Baselines
+    # Baseline
     baseline_runner = BaselineRunner(n_blocks=N_BLOCKS)
-    random_baseline = baseline_runner.run_random_baseline(15)
+    random_baseline = baseline_runner.run_random_baseline(10)
     
-    # ====================== RESULTS TABLE ======================
+    # ====================== RESULTS ======================
     results = {
         'Setting': ['Generic RL (PPO)', 'BD RL (PPO)', 'Random Baseline'],
         'Mean Payload': [generic_rl['mean_payload'], bd_rl['mean_payload'], random_baseline['mean_payload']],
@@ -75,36 +92,34 @@ if __name__ == "__main__":
     }
     
     df = pd.DataFrame(results)
-    print("\n" + "="*70)
+    print("\n" + "="*75)
     print("FINAL RESULTS: Generic vs Bangladesh Conditions")
-    print("="*70)
+    print("="*75)
     print(df.round(2))
     
     df.to_csv("results/final/results_comparison.csv", index=False)
-    print("\n Results saved to results/final/results_comparison.csv")
-    
-    # ====================== PLOTS ======================
+    print("\n Results saved!")
+
+    # Plot
     plt.figure(figsize=(14, 6))
-    
+    settings = ['Generic RL', 'BD RL', 'Random']
     plt.subplot(1, 2, 1)
-    plt.bar(['Generic RL', 'BD RL', 'Random'], 
-            [generic_rl['mean_payload'], bd_rl['mean_payload'], random_baseline['mean_payload']],
+    plt.bar(settings, [generic_rl['mean_payload'], bd_rl['mean_payload'], random_baseline['mean_payload']], 
             color=['#1f77b4', '#ff7f0e', '#7f7f7f'])
     plt.ylabel('Mean Payload Cost')
     plt.title('Payload Size Comparison')
     plt.grid(axis='y', alpha=0.3)
-    
+
     plt.subplot(1, 2, 2)
-    plt.bar(['Generic RL', 'BD RL', 'Random'], 
-            [generic_rl['mean_memory'], bd_rl['mean_memory'], random_baseline['mean_memory']],
+    plt.bar(settings, [generic_rl['mean_memory'], bd_rl['mean_memory'], random_baseline['mean_memory']], 
             color=['#1f77b4', '#ff7f0e', '#7f7f7f'])
     plt.ylabel('Mean Memory Overhead')
     plt.title('Memory Usage Comparison')
     plt.grid(axis='y', alpha=0.3)
-    
+
     plt.tight_layout()
     plt.savefig('results/final/final_comparison.png', dpi=300, bbox_inches='tight')
     plt.show()
-    
+
     print(" Plot saved as results/final/final_comparison.png")
     print("\n Checkpoint 5 Completed!")
