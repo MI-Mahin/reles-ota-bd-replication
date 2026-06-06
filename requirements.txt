@@ -5,3 +5,7 @@ torch
 pandas
 matplotlib
 seaborn
+# Phase 2 — MARL dependencies
+pettingzoo>=1.24
+supersuit
+scipy
