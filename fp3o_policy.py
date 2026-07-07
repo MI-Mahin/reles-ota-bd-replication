@@ -316,20 +316,30 @@ class FP3OFeaturesExtractor(BaseFeaturesExtractor):
     Registered with SB3 via policy_kwargs["features_extractor_class"].
     """
 
-    def __init__(self, observation_space: spaces.Dict, latent_dim: int = 128):
-        # Compute flat obs dimension
-        flat_dim = sum(
-            int(np.prod(v.shape)) for v in observation_space.spaces.values()
-        )
+    def __init__(self, observation_space: spaces.Dict, latent_dim: int = 128, is_critic: bool = False, algorithm: str = "fp3o"):
+        self.use_global = is_critic and (algorithm in ["mappo", "fp3o"])
+        
+        flat_dim = 0
+        for key, space in observation_space.spaces.items():
+            if self.use_global:
+                if key == "state":
+                    flat_dim += int(np.prod(space.shape))
+            else:
+                if key != "state":
+                    flat_dim += int(np.prod(space.shape))
+                    
         super().__init__(observation_space, features_dim=latent_dim)
 
         self.flatten     = nn.Flatten()
         self.backbone    = SharedBackbone(obs_dim=flat_dim, latent_dim=latent_dim)
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Flatten each sub-space, concatenate, then run through backbone
         parts = []
         for key in sorted(observations.keys()):   # deterministic ordering
+            if self.use_global and key != "state":
+                continue
+            if not self.use_global and key == "state":
+                continue
             obs = observations[key]
             if obs.dtype == torch.int32 or obs.dtype == torch.int64:
                 obs = obs.float()
@@ -361,6 +371,7 @@ class FP3OPolicy(ActorCriticPolicy):
         n_blocks: int     = 24,
         ecu_type_idx: int = 3,        # 3 = "generic" (safe default)
         latent_dim: int   = 128,
+        algorithm: str    = "fp3o",
         # Value normalizer hypers
         vn_momentum: float = 0.01,
         vn_clip:     float = 10.0,
@@ -374,10 +385,27 @@ class FP3OPolicy(ActorCriticPolicy):
         self.n_blocks     = n_blocks
         self.ecu_type_idx = ecu_type_idx
         self.latent_dim   = latent_dim
+        self.algorithm    = algorithm
         self.vn_momentum  = vn_momentum
         self.vn_clip      = vn_clip
+        
+        if "share_features_extractor" not in kwargs:
+            kwargs["share_features_extractor"] = False
+        self.share_features_extractor = kwargs["share_features_extractor"]
 
         super().__init__(observation_space, action_space, lr_schedule, **kwargs)
+
+        # Overwrite features extractors with correct flags
+        self.pi_features_extractor = FP3OFeaturesExtractor(
+            self.observation_space, latent_dim=self.latent_dim, is_critic=False, algorithm=self.algorithm
+        ).to(self.device)
+        
+        if self.share_features_extractor:
+            self.vf_features_extractor = self.pi_features_extractor
+        else:
+            self.vf_features_extractor = FP3OFeaturesExtractor(
+                self.observation_space, latent_dim=self.latent_dim, is_critic=True, algorithm=self.algorithm
+            ).to(self.device)
 
         # Value normalizer (initialized after super().__init__ sets up device)
         self.value_normalizer = ValueNormalizer(
@@ -436,7 +464,11 @@ class FP3OPolicy(ActorCriticPolicy):
         Override: compute action distribution from the shared latent code.
         Selects the ECU-type-specific action head and position head.
         """
-        if obs is not None and isinstance(obs, dict) and "agent_id" in obs:
+        if self.algorithm in ["ippo", "mappo"]:
+            # Shared head for all agents
+            action_logits   = self.action_heads[0](latent_pi)
+            position_logits = self.position_heads[0](latent_pi)
+        elif obs is not None and isinstance(obs, dict) and "agent_id" in obs:
             agent_id_batch = obs["agent_id"]  # shape: (batch_size, n_agents)
             agent_indices = agent_id_batch.argmax(dim=-1)  # shape: (batch_size,)
             batch_ecu_type_indices = self.agent_idx_to_ecu_type[agent_indices]  # shape: (batch_size,)
@@ -469,7 +501,7 @@ class FP3OPolicy(ActorCriticPolicy):
         Predict value estimates V(s) with denormalization.
         Called during rollout collection — returns raw-scale values.
         """
-        features = self.extract_features(obs, self.vf_features_extractor)
+        features = self.vf_features_extractor(obs)
         latent_vf = self.mlp_extractor(features)[1]
         # Critic head returns normalized values; denormalize to reward scale
         normed_values = self.critic_head(latent_vf)
@@ -484,8 +516,14 @@ class FP3OPolicy(ActorCriticPolicy):
         Override to inject value normalization into the training loop.
         Called inside PPO's learn() during gradient computation.
         """
-        features = self.extract_features(obs)
-        latent_pi, latent_vf = self.mlp_extractor(features)
+        pi_features = self.pi_features_extractor(obs)
+        if self.share_features_extractor:
+            vf_features = pi_features
+        else:
+            vf_features = self.vf_features_extractor(obs)
+            
+        latent_pi = self.mlp_extractor(pi_features)[0]
+        latent_vf = self.mlp_extractor(vf_features)[1]
 
         distribution   = self._get_action_dist_from_latent(latent_pi, obs)
         log_prob       = distribution.log_prob(actions)
@@ -501,8 +539,14 @@ class FP3OPolicy(ActorCriticPolicy):
         deterministic: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """SB3 standard forward: returns (actions, values, log_probs)."""
-        features = self.extract_features(obs)
-        latent_pi, latent_vf = self.mlp_extractor(features)
+        pi_features = self.pi_features_extractor(obs)
+        if self.share_features_extractor:
+            vf_features = pi_features
+        else:
+            vf_features = self.vf_features_extractor(obs)
+            
+        latent_pi = self.mlp_extractor(pi_features)[0]
+        latent_vf = self.mlp_extractor(vf_features)[1]
 
         distribution = self._get_action_dist_from_latent(latent_pi, obs)
         actions      = distribution.get_actions(deterministic=deterministic)
@@ -583,6 +627,8 @@ def make_fp3o_policy_kwargs(
 # ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding='utf-8')
     print("Smoke-testing FP3O policy components ...\n")
 
     # ── ValueNormalizer ──

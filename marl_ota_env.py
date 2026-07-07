@@ -84,9 +84,11 @@ class MultiAgentOTAEnv(ParallelEnv):
         max_steps: int = None,
         render_mode: Optional[str] = None,
         ecu_types: Optional[Dict[str, str]] = None,
+        safety_shield: bool = True,
     ):
         super().__init__()
 
+        self.safety_shield      = safety_shield
         self.render_mode        = render_mode
         self.n_agents_total     = n_agents
         self.n_blocks           = n_blocks
@@ -152,7 +154,9 @@ class MultiAgentOTAEnv(ParallelEnv):
           step             : Box(1,)  — current step count
           agent_id         : Box(n_agents,)  — one-hot agent identifier
                              (preserved even in zero-vector death-mask obs)
+          state            : Box(state_dim,) — global state representation
         """
+        state_dim = self.n_agents_total * (self.n_blocks + 4)
         return spaces.Dict({
             "mask":             spaces.MultiBinary(self.n_blocks),
             "cum_encoding_cost": spaces.Box(0, np.inf, (1,), dtype=np.float32),
@@ -160,7 +164,25 @@ class MultiAgentOTAEnv(ParallelEnv):
             "memory_used":       spaces.Box(0, 1.0,   (1,), dtype=np.float32),
             "step":              spaces.Box(0, self.n_blocks + 10, (1,), dtype=np.int32),
             "agent_id":          spaces.Box(0, 1.0, (self.n_agents_total,), dtype=np.float32),
+            "state":             spaces.Box(-np.inf, np.inf, (state_dim,), dtype=np.float32),
         })
+
+    def _get_global_state(self) -> np.ndarray:
+        state_parts = []
+        mem_budget = self.bd_params.get("memory_budget_fraction", 1.0)
+        mem_cap    = self.n_blocks * self.block_size * 2.0 * mem_budget
+
+        for a in self.possible_agents:
+            if self.terminations[a] or self.truncations[a]:
+                state_parts.append(np.zeros(self.n_blocks + 4, dtype=np.float32))
+            else:
+                m = self.masks[a].astype(np.float32)
+                e = np.array([self.cum_enc_cost[a]], dtype=np.float32)
+                t = np.array([self.cum_tx_cost[a]], dtype=np.float32)
+                mem = np.array([min(self.cum_memory[a] / max(mem_cap, 1.0), 1.0)], dtype=np.float32)
+                s = np.array([self.current_step[a]], dtype=np.float32)
+                state_parts.extend([m, e, t, mem, s])
+        return np.concatenate(state_parts)
 
     def observation_space(self, agent: str) -> spaces.Dict:
         return self._obs_space
@@ -232,8 +254,10 @@ class MultiAgentOTAEnv(ParallelEnv):
         agent_idx  = self.possible_agents.index(agent)
         agent_id_vec = np.zeros(self.n_agents_total, dtype=np.float32)
         agent_id_vec[agent_idx] = 1.0
+        
+        state = self._get_global_state()
 
-        if self.terminations[agent]:
+        if self.terminations[agent] or self.truncations[agent]:
             # ── DEATH MASK: zero everything except agent_id ──
             return {
                 "mask":              np.zeros(self.n_blocks, dtype=np.int8),
@@ -242,6 +266,7 @@ class MultiAgentOTAEnv(ParallelEnv):
                 "memory_used":       np.zeros(1, dtype=np.float32),
                 "step":              np.zeros(1, dtype=np.int32),
                 "agent_id":          agent_id_vec,
+                "state":             state,
             }
 
         # ── Normal observation ──
@@ -258,6 +283,7 @@ class MultiAgentOTAEnv(ParallelEnv):
                                  ),
             "step":              np.array([self.current_step[agent]], dtype=np.int32),
             "agent_id":          agent_id_vec,
+            "state":             state,
         }
 
     # ──────────────────────────────────────────────────────────
@@ -298,85 +324,170 @@ class MultiAgentOTAEnv(ParallelEnv):
             obs = {a: self._get_obs(a) for a in self.possible_agents}
             return obs, rewards, dict(self.terminations), dict(self.truncations), infos
 
-        # ── Process each agent's action ──
+        # ── Step-limit truncation check first ──
         for agent in self.possible_agents:
+            if not (self.terminations[agent] or self.truncations[agent]):
+                if self.current_step[agent] >= self.max_steps:
+                    self.truncations[agent] = True
 
-            # ── Dead agents: pass-through ──
+        # ── Compute valid actions and proposed overhead ──
+        valid_actions = {} 
+        proposed_overhead = {}
+        for agent in self.possible_agents:
             if self.terminations[agent] or self.truncations[agent]:
-                rewards[agent] = 0.0
-                infos[agent]   = {"dead": True}
                 continue
-
-            # ── Step-limit truncation ──
-            if self.current_step[agent] >= self.max_steps:
-                self.truncations[agent] = True
-                rewards[agent]  = -100.0
-                infos[agent]    = {"truncated": True}
-                continue
-
-            # ── Get this agent's action ──
+                
             action = actions.get(agent)
             if action is None:
-                # Agent not in `actions` dict — treat as no-op with penalty
-                rewards[agent] = -5.0
-                infos[agent]   = {"missing_action": True}
                 continue
-
+                
             block_idx, operation = int(action[0]), int(action[1])
+            if block_idx >= self.n_blocks or self.masks[agent][block_idx] == 0:
+                continue
+                
+            delta_size = estimate_delta_size(block_idx, operation, self._similarity_bias[agent], self.block_size)
+            encoding_cost = delta_size * (1.25 if operation == 2 else 1.0)
+            tx_cost = calculate_tx_cost(delta_size, self.bd_params, stochastic=self.stochastic_latency)
+            if self.bd_mode:
+                tx_cost *= self.bd_params.get("monsoon_multiplier", 1.0)
+            overhead = delta_size * (2.6 if operation == 2 else 1.9)
+            
+            valid_actions[agent] = (block_idx, operation, delta_size, overhead, encoding_cost, tx_cost)
+            proposed_overhead[agent] = overhead
 
-            # ── Invalid action guard ──
+        current_M = sum(self.cum_memory[a] for a in self.possible_agents)
+        mem_budget = self.bd_params.get("memory_budget_fraction", 1.0)
+        M_limit = self.n_agents_total * self.n_blocks * self.block_size * 2.0 * mem_budget * 0.25
+        alpha = 0.5
+
+        def _eval_coalition(S):
+            S_overhead = {a: proposed_overhead[a] for a in S}
+            S_total_delta = sum(S_overhead.values())
+            crashed = False
+            shielded_in_S = set()
+            if S_total_delta > alpha * (M_limit - current_M):
+                if self.safety_shield:
+                    sorted_agents = sorted(S_overhead.keys(), key=lambda a: S_overhead[a], reverse=True)
+                    rem_delta = S_total_delta
+                    for a in sorted_agents:
+                        if rem_delta <= max(0, alpha * (M_limit - current_M)):
+                            break
+                        rem_delta -= S_overhead[a]
+                        shielded_in_S.add(a)
+                else:
+                    if current_M + S_total_delta > M_limit:
+                        crashed = True
+            
+            if crashed:
+                return -500.0 * len(self.possible_agents)
+                
+            val = 0.0
+            for a in S:
+                if a not in shielded_in_S:
+                    _, _, delta_size, overhead, enc_cost, tx_c = valid_actions[a]
+                    val -= (enc_cost + tx_c + overhead * 0.3)
+                    if np.sum(self.masks[a]) == 1:
+                        total_spent = self.cum_enc_cost[a] + self.cum_tx_cost[a] + enc_cost + tx_c
+                        max_possible = self.n_blocks * self.block_size * 0.7
+                        val += 250.0 * (1.0 - total_spent / max(max_possible, 1.0))
+            return val
+
+        active_agents = [a for a in self.possible_agents if a in valid_actions]
+        shapley_rewards = {a: 0.0 for a in self.possible_agents}
+        
+        if len(active_agents) > 0:
+            import itertools
+            import random
+            
+            if len(active_agents) <= 4:
+                perms = list(itertools.permutations(active_agents))
+            else:
+                perms = [tuple(random.sample(active_agents, len(active_agents))) for _ in range(10)]
+                
+            mc_sums = {a: 0.0 for a in active_agents}
+            for p in perms:
+                S = set()
+                v_prev = 0.0
+                for a in p:
+                    S.add(a)
+                    v_curr = _eval_coalition(S)
+                    mc_sums[a] += (v_curr - v_prev)
+                    v_prev = v_curr
+                    
+            for a in active_agents:
+                shapley_rewards[a] = mc_sums[a] / len(perms)
+
+        # ── Apply Grand Coalition ──
+        S_all = set(active_agents)
+        S_total_delta = sum(proposed_overhead[a] for a in S_all)
+        crashed = False
+        shielded = set()
+        if S_total_delta > alpha * (M_limit - current_M):
+            if self.safety_shield:
+                sorted_agents = sorted(active_agents, key=lambda a: proposed_overhead[a], reverse=True)
+                rem_delta = S_total_delta
+                for a in sorted_agents:
+                    if rem_delta <= max(0, alpha * (M_limit - current_M)):
+                        break
+                    rem_delta -= proposed_overhead[a]
+                    shielded.add(a)
+            else:
+                if current_M + S_total_delta > M_limit:
+                    crashed = True
+                    
+        if crashed:
+            for agent in self.possible_agents:
+                self.truncations[agent] = True
+                rewards[agent] = -500.0
+                infos[agent] = {"crash": True}
+            self.agents = []
+            obs = {a: self._get_obs(a) for a in self.possible_agents}
+            return obs, rewards, dict(self.terminations), dict(self.truncations), infos
+
+        for agent in self.possible_agents:
+            if self.terminations[agent] or self.truncations[agent]:
+                rewards[agent] = 0.0
+                infos[agent] = {"dead": True}
+                continue
+                
+            action = actions.get(agent)
+            if action is None:
+                rewards[agent] = -5.0
+                infos[agent] = {"missing_action": True}
+                continue
+                
+            block_idx, operation = int(action[0]), int(action[1])
             if block_idx >= self.n_blocks or self.masks[agent][block_idx] == 0:
                 rewards[agent] = -50.0
-                infos[agent]   = {"invalid_action": True, "block_idx": block_idx}
-                # Still advance step to avoid infinite loops
+                infos[agent] = {"invalid_action": True, "block_idx": block_idx}
                 self.current_step[agent] += 1
                 continue
-
-            # ── Compute costs ──
-            delta_size    = estimate_delta_size(
-                block_idx, operation,
-                self._similarity_bias[agent],
-                self.block_size
-            )
-            encoding_cost = delta_size * (1.25 if operation == 2 else 1.0)
-            tx_cost       = calculate_tx_cost(
-                delta_size, self.bd_params,
-                stochastic=self.stochastic_latency
-            )
-            memory_overhead = delta_size * (2.6 if operation == 2 else 1.9)
-
-            # Monsoon penalty (BD-specific)
-            if self.bd_mode:
-                monsoon_mult = self.bd_params.get("monsoon_multiplier", 1.0)
-                tx_cost      *= monsoon_mult
-
-            # ── Update agent state ──
-            self.cum_enc_cost[agent] += encoding_cost
-            self.cum_tx_cost[agent]  += tx_cost
-            self.cum_memory[agent]   += memory_overhead
+                
+            if agent in shielded:
+                rewards[agent] = 0.0
+                infos[agent] = {"shielded": True}
+                self.current_step[agent] += 1
+                continue
+                
+            # Execute action
+            _, _, delta_size, overhead, enc_cost, tx_cost = valid_actions[agent]
+            
+            self.cum_enc_cost[agent] += enc_cost
+            self.cum_tx_cost[agent] += tx_cost
+            self.cum_memory[agent] += overhead
             self.masks[agent][block_idx] = 0
-            self.current_step[agent]    += 1
-
-            # ── Per-step reward ──
-            total_cost = encoding_cost + tx_cost + memory_overhead * 0.3
-            step_reward = -total_cost
-
-            # ── Termination check (all blocks processed?) ──
+            self.current_step[agent] += 1
+            
             done = bool(np.all(self.masks[agent] == 0))
             if done:
                 self.terminations[agent] = True
-                # Completion bonus: reward efficient agents
-                total_spent   = self.cum_enc_cost[agent] + self.cum_tx_cost[agent]
-                max_possible  = self.n_blocks * self.block_size * 0.7
-                success_bonus = 250.0 * (1.0 - total_spent / max(max_possible, 1.0))
-                step_reward  += success_bonus
-
-            rewards[agent] = float(step_reward)
-            infos[agent]   = {
-                "payload_bytes":    self.cum_enc_cost[agent] + self.cum_tx_cost[agent],
-                "memory_used":      self.cum_memory[agent],
+                
+            rewards[agent] = float(shapley_rewards[agent])
+            infos[agent] = {
+                "payload_bytes": self.cum_enc_cost[agent] + self.cum_tx_cost[agent],
+                "memory_used": self.cum_memory[agent],
                 "blocks_processed": int(np.sum(self.masks[agent] == 0)),
-                "done":             done,
+                "done": done,
             }
 
         # ── Observations for ALL agents (including dead → zero-vector) ──

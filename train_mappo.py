@@ -121,10 +121,12 @@ def run_random_marl(n_agents: int = 4, n_blocks: int = 16, n_episodes: int = 20,
 #  IPPO training (Independent PPO via SuperSuit + SB3)
 # ══════════════════════════════════════════════════════════════
 
-def train_ippo(
+def train_algorithm(
+    algorithm: str      = "fp3o",
     n_agents: int       = 4,
     n_blocks: int       = 16,
     bd_mode: bool       = False,
+    safety: bool        = True,
     total_timesteps: int = 200_000,
     save_dir: str       = "results/marl_models",
 ) -> None:
@@ -153,8 +155,8 @@ def train_ippo(
         print("  Install with:  pip install supersuit stable-baselines3")
         return
 
-    print(f"\n Training IPPO on MultiAgentOTAEnv")
-    print(f"   n_agents={n_agents}, n_blocks={n_blocks}, bd_mode={bd_mode}")
+    print(f"\n Training {algorithm.upper()} on MultiAgentOTAEnv")
+    print(f"   n_agents={n_agents}, n_blocks={n_blocks}, bd_mode={bd_mode}, safety={safety}")
     print(f"   total_timesteps={total_timesteps:,}")
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
@@ -163,7 +165,8 @@ def train_ippo(
     def make_env():
         return MultiAgentOTAEnv(
             n_agents=n_agents, n_blocks=n_blocks,
-            bd_mode=bd_mode, stochastic_latency=bd_mode
+            bd_mode=bd_mode, stochastic_latency=bd_mode,
+            safety_shield=safety
         )
 
     raw_env = make_env()
@@ -174,7 +177,7 @@ def train_ippo(
     # pyrefly: ignore [missing-import]
     from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
     env = MarkovVectorEnv(raw_env, black_death=True)
-    env = ss.concat_vec_envs_v1(env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3")
+    env = ss.concat_vec_envs_v1(env, num_vec_envs=10, num_cpus=1, base_class="stable_baselines3")
 
     # ── Patch missing VecEnv interface methods onto ConcatVecEnv ──────────────
     # SB3's VecEnvWrapper.__init__ calls get_attr("render_mode") on the inner
@@ -204,13 +207,18 @@ def train_ippo(
         n_blocks=n_blocks,
         ecu_type="generic"
     )
+    policy_kwargs["algorithm"] = algorithm
+    policy_kwargs["share_features_extractor"] = False
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = PPO(
         policy          = FP3OPolicy,
         env             = env,
         policy_kwargs   = policy_kwargs,
         verbose         = 1,
-        tensorboard_log = f"{save_dir}/logs/ippo_{'bd' if bd_mode else 'generic'}",
+        device          = device,
+        tensorboard_log = f"{save_dir}/logs/{algorithm}_{'bd' if bd_mode else 'generic'}",
         learning_rate   = 3e-4,
         n_steps         = 2048,
         batch_size      = 64,
@@ -225,15 +233,15 @@ def train_ippo(
     np.random.seed(42)
     torch.manual_seed(42)
 
-    print("\n  Starting IPPO training...")
+    print(f"\n  Starting {algorithm.upper()} training on {device}...")
     t0 = time.time()
     callback = ValueNormalizationCallback()
     model.learn(total_timesteps=total_timesteps, progress_bar=True, callback=callback)
     elapsed = time.time() - t0
 
     tag = "bd" if bd_mode else "generic"
-    model.save(f"{save_dir}/ippo_{tag}_final")
-    print(f"\n  Training done in {elapsed:.1f}s  →  saved to {save_dir}/ippo_{tag}_final")
+    model.save(f"{save_dir}/{algorithm}_{tag}_final")
+    print(f"\n  Training done in {elapsed:.1f}s  →  saved to {save_dir}/{algorithm}_{tag}_final")
     env.close()
 
 
@@ -243,12 +251,15 @@ def train_ippo(
 
 def main():
     parser = argparse.ArgumentParser(description="Phase 2 MARL Training — OTA Update Environment")
-    parser.add_argument("--mode",       choices=["random", "ippo"], default="random",
-                        help="Training mode: 'random' for baseline, 'ippo' for IPPO training")
+    parser.add_argument("--mode",       choices=["random", "train"], default="train",
+                        help="Training mode: 'random' for baseline, 'train' for learning")
+    parser.add_argument("--algorithm",  choices=["ippo", "mappo", "fp3o"], default="fp3o",
+                        help="MARL algorithm to train")
     parser.add_argument("--n_agents",   type=int, default=4,       help="Number of ECU agents")
     parser.add_argument("--n_blocks",   type=int, default=16,      help="Firmware blocks per agent")
-    parser.add_argument("--bd_mode",    action="store_true",        help="Enable BD network parameters")
-    parser.add_argument("--timesteps",  type=int, default=100_000, help="IPPO training timesteps")
+    parser.add_argument("--bd_mode",    action="store_true",       help="Enable BD network parameters")
+    parser.add_argument("--safety",     type=lambda x: str(x).lower() == 'true', default=True, help="Enable Safety Shield")
+    parser.add_argument("--timesteps",  type=int, default=100_000, help="Training timesteps")
     parser.add_argument("--episodes",   type=int, default=20,      help="Episodes for random baseline")
     args = parser.parse_args()
 
@@ -256,7 +267,8 @@ def main():
     print("║   Phase 2 — Multi-Agent OTA Training                  ║")
     print("╚" + "═" * 55 + "╝")
     print(f"  Mode: {args.mode.upper()}")
-    print(f"  Agents: {args.n_agents} | Blocks/agent: {args.n_blocks} | BD mode: {args.bd_mode}")
+    print(f"  Algorithm: {args.algorithm.upper()}")
+    print(f"  Agents: {args.n_agents} | Blocks/agent: {args.n_blocks} | BD mode: {args.bd_mode} | Safety: {args.safety}")
 
     if args.mode == "random":
         results = run_random_marl(
@@ -271,11 +283,13 @@ def main():
             json.dump(results, f, indent=2)
         print(f"\n  Results saved to {out_path}")
 
-    elif args.mode == "ippo":
-        train_ippo(
+    elif args.mode == "train":
+        train_algorithm(
+            algorithm       = args.algorithm,
             n_agents        = args.n_agents,
             n_blocks        = args.n_blocks,
             bd_mode         = args.bd_mode,
+            safety          = args.safety,
             total_timesteps = args.timesteps,
         )
 
