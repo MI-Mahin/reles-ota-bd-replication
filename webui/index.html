@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MA-ReLES-OTA Control</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="kicker">MA-ReLES-OTA</p>
+          <h1>Training Control</h1>
+          <p class="typing">Local web interface for clear runs, live metrics, and comparison charts.</p>
+        </div>
+        <div class="status" title="Shows whether a training subprocess is currently active.">
+          <span id="runDot" class="dot"></span>
+          <span id="runState">Idle</span>
+        </div>
+      </header>
+
+      <section class="grid">
+        <form id="runForm" class="panel controls">
+          <div class="panel-title">
+            <h2>Configuration</h2>
+            <button type="button" id="resetBtn" title="Clear the interface state. Saved result files are left untouched.">Reset</button>
+          </div>
+
+          <div class="device-box" title="Reports the device PyTorch can currently use on this machine.">
+            <div>
+              <span class="label">Device detected</span>
+              <strong id="deviceText">Checking...</strong>
+            </div>
+            <small id="deviceHint">Recommendation appears after rollout values are entered.</small>
+          </div>
+
+          <label title="Choose CPU, automatic selection, or CUDA when PyTorch detects an NVIDIA GPU.">
+            Device
+            <select name="device" id="deviceSelect"></select>
+          </label>
+
+          <div class="two">
+            <label title="Number of parallel environments used for rollout collection. Higher values collect more samples at once.">
+              n_env
+              <input name="n_envs" type="number" min="1" max="64" value="10">
+            </label>
+            <label title="PPO rollout horizon per environment. Product n_steps x n_env controls batch size before updates.">
+              n_steps
+              <input name="n_steps" type="number" min="64" step="64" value="2048">
+            </label>
+          </div>
+
+          <div class="two">
+            <label title="Total training timesteps per seed. Small values are useful for smoke tests.">
+              timesteps
+              <input name="timesteps" type="number" min="1" step="1024" value="100000">
+            </label>
+            <label title="Independent runs from different random starts. More seeds give more reliable averages.">
+              seeds
+              <input name="seeds" type="number" min="1" max="50" value="10">
+            </label>
+          </div>
+
+          <div class="two">
+            <label title="Number of ECU agents trained together.">
+              n_agent
+              <input name="n_agents" type="number" min="1" max="64" value="4">
+            </label>
+            <label title="Firmware blocks managed by each agent. More blocks increase action-space difficulty.">
+              n_block
+              <input name="n_blocks" type="number" min="2" max="128" value="16">
+            </label>
+          </div>
+
+          <div class="two">
+            <label title="Choose the main MARL algorithm for this run.">
+              Algorithm
+              <select name="algorithm">
+                <option value="fp3o">FP3O</option>
+                <option value="mappo">MAPPO</option>
+                <option value="ippo">IPPO</option>
+              </select>
+            </label>
+            <label title="Optional second algorithm. When selected, it runs after the first and creates a comparison chart if possible.">
+              Compare with
+              <select name="compare_algorithm">
+                <option value="">None</option>
+                <option value="ippo">IPPO</option>
+                <option value="mappo">MAPPO</option>
+                <option value="fp3o">FP3O</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="two">
+            <label title="Mode currently maps to the existing main.py training/test choices. Test mode is reserved for future evaluation wiring.">
+              Mode
+              <select name="mode">
+                <option value="train">Train</option>
+                <option value="test">Test</option>
+              </select>
+            </label>
+            <label title="PPO minibatch size used during training updates.">
+              Batch size
+              <input name="batch_size" type="number" min="8" step="8" value="64">
+            </label>
+          </div>
+
+          <div class="switches">
+            <label title="Enables the CBF safety shield that overrides unsafe memory-heavy actions.">
+              <input name="safety" type="checkbox" checked>
+              <span>Safety Shield</span>
+            </label>
+            <label title="Uses Bangladesh constrained network parameters with stochastic latency. This replaces the old BD mode wording.">
+              <input name="bd_mode" type="checkbox" checked>
+              <span>Constrained Network</span>
+            </label>
+            <label title="Keeps completed agents masked with zero observations so vectorized training remains stable.">
+              <input name="death_masking" type="checkbox" checked>
+              <span>Death Masking</span>
+            </label>
+          </div>
+
+          <div class="recommendation" id="recommendation" title="Device recommendation based on rollout product and CUDA availability."></div>
+
+          <button class="primary" type="submit" title="Starts the selected training command and streams terminal output below.">Run Training</button>
+        </form>
+
+        <section class="panel monitor">
+          <div class="panel-title">
+            <h2>Live Monitoring</h2>
+            <span id="seedText" title="Current seed number from the running multi-seed experiment.">Seed -</span>
+          </div>
+          <div class="progress" title="Estimated progress from SB3 total_timesteps output.">
+            <div id="progressBar"></div>
+          </div>
+          <div class="metric-strip">
+            <div title="Frames per second reported by Stable-Baselines3."><span>FPS</span><strong id="fps">-</strong></div>
+            <div title="Training iterations reported by Stable-Baselines3."><span>Iterations</span><strong id="iterations">-</strong></div>
+            <div title="Elapsed training time reported by Stable-Baselines3."><span>Time</span><strong id="elapsed">-</strong></div>
+          </div>
+
+          <h3>Attributes</h3>
+          <div class="table-wrap" title="Live SB3 rollout/time/train attributes parsed from terminal output.">
+            <table id="metricsTable">
+              <thead><tr><th>Field</th><th>Value</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <h3>Terminal Output</h3>
+          <pre id="logBox" title="Clean mirror of the subprocess output from main.py and train_mappo.py."></pre>
+        </section>
+      </section>
+
+      <section class="grid lower">
+        <section class="panel">
+          <h2>Leaderboard</h2>
+          <div class="table-wrap" title="Rows are read from results/leaderboard.csv after completed runs.">
+            <table id="leaderboard">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Visualizer</h2>
+          <div id="charts" class="charts" title="Generated comparison and benchmark charts from results/charts."></div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,343 @@
+@import url("https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap");
+
+:root {
+  --bg: #ffffff;
+  --fg: #0b0b0b;
+  --muted: #606060;
+  --line: #0b0b0b;
+  --soft: #f5f5f5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: Nunito, Arial, sans-serif;
+}
+
+.shell {
+  width: min(1480px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 28px 0 40px;
+}
+
+.topbar,
+.panel,
+.device-box,
+.metric-strip > div {
+  border: 2px solid var(--line);
+  background: #fff;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.kicker,
+.label,
+small,
+.metric-strip span,
+#seedText {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(2rem, 4vw, 4rem);
+  line-height: 0.95;
+}
+
+h2 {
+  font-size: 1.15rem;
+}
+
+h3 {
+  margin-top: 18px;
+  margin-bottom: 8px;
+  font-size: 0.98rem;
+}
+
+.typing {
+  display: inline-block;
+  margin-top: 8px;
+  max-width: 67ch;
+  overflow: hidden;
+  white-space: nowrap;
+  border-right: 2px solid var(--fg);
+  animation: type 3s steps(72, end), blink 0.8s step-end infinite;
+}
+
+@keyframes type {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+@keyframes blink {
+  50% { border-color: transparent; }
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 108px;
+  justify-content: center;
+  border: 2px solid var(--line);
+  padding: 10px 12px;
+  font-weight: 800;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--fg);
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.dot.on {
+  background: var(--fg);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) 1fr;
+  gap: 16px;
+}
+
+.lower {
+  grid-template-columns: 1fr 1fr;
+  margin-top: 16px;
+}
+
+.panel {
+  padding: 16px;
+}
+
+.panel-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+input,
+select,
+button {
+  min-height: 42px;
+  border: 2px solid var(--line);
+  background: #fff;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 700;
+  padding: 8px 10px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover,
+select:hover,
+input:hover {
+  background: var(--soft);
+}
+
+.primary {
+  background: var(--fg);
+  color: #fff;
+  width: 100%;
+}
+
+.primary:disabled {
+  background: #fff;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.device-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+}
+
+.device-box strong {
+  display: block;
+  font-size: 1.2rem;
+}
+
+.switches {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  border: 2px solid var(--line);
+  padding: 12px;
+}
+
+.switches label {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.switches input {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  accent-color: #000;
+}
+
+.recommendation {
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.progress {
+  height: 18px;
+  border: 2px solid var(--line);
+  margin-bottom: 14px;
+}
+
+#progressBar {
+  width: 0%;
+  height: 100%;
+  background: var(--fg);
+  transition: width 0.25s ease;
+}
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.metric-strip > div {
+  padding: 12px;
+}
+
+.metric-strip strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.4rem;
+}
+
+.table-wrap {
+  max-height: 320px;
+  overflow: auto;
+  border: 2px solid var(--line);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  padding: 8px;
+  vertical-align: top;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
+}
+
+pre {
+  height: 300px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 2px solid var(--line);
+  background: #fff;
+  color: #000;
+  font: 0.86rem/1.45 Consolas, "Courier New", monospace;
+  white-space: pre-wrap;
+}
+
+.charts {
+  display: grid;
+  gap: 12px;
+}
+
+.chart-card {
+  border: 2px solid var(--line);
+  padding: 10px;
+}
+
+.chart-card img {
+  width: 100%;
+  display: block;
+  border: 1px solid var(--line);
+}
+
+.empty {
+  color: var(--muted);
+  border: 2px dashed var(--line);
+  padding: 20px;
+}
+
+@media (max-width: 920px) {
+  .grid,
+  .lower,
+  .two,
+  .metric-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .typing {
+    white-space: normal;
+    animation: none;
+    border-right: 0;
+  }
+}

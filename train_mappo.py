@@ -129,6 +129,11 @@ def train_algorithm(
     safety: bool        = True,
     total_timesteps: int = 200_000,
     save_dir: str       = "results/marl_models",
+    n_envs: int          = 10,
+    n_steps: int         = 2048,
+    batch_size: int      = 64,
+    device: str          = "auto",
+    death_masking: bool  = True,
 ) -> None:
     """
     Train Independent PPO (IPPO) on the multi-agent OTA env.
@@ -157,7 +162,7 @@ def train_algorithm(
 
     print(f"\n Training {algorithm.upper()} on MultiAgentOTAEnv")
     print(f"   n_agents={n_agents}, n_blocks={n_blocks}, bd_mode={bd_mode}, safety={safety}")
-    print(f"   total_timesteps={total_timesteps:,}")
+    print(f"   total_timesteps={total_timesteps:,}, n_envs={n_envs}, n_steps={n_steps}, batch_size={batch_size}")
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
@@ -176,8 +181,8 @@ def train_algorithm(
     
     # pyrefly: ignore [missing-import]
     from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
-    env = MarkovVectorEnv(raw_env, black_death=True)
-    env = ss.concat_vec_envs_v1(env, num_vec_envs=10, num_cpus=1, base_class="stable_baselines3")
+    env = MarkovVectorEnv(raw_env, black_death=death_masking)
+    env = ss.concat_vec_envs_v1(env, num_vec_envs=n_envs, num_cpus=1, base_class="stable_baselines3")
 
     # ── Patch missing VecEnv interface methods onto ConcatVecEnv ──────────────
     # SB3's VecEnvWrapper.__init__ calls get_attr("render_mode") on the inner
@@ -210,18 +215,24 @@ def train_algorithm(
     policy_kwargs["algorithm"] = algorithm
     policy_kwargs["share_features_extractor"] = False
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "auto":
+        selected_device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif device == "cuda" and not torch.cuda.is_available():
+        print("  [warn] CUDA was requested but is not available. Falling back to CPU.")
+        selected_device = "cpu"
+    else:
+        selected_device = device
 
     model = PPO(
         policy          = FP3OPolicy,
         env             = env,
         policy_kwargs   = policy_kwargs,
         verbose         = 1,
-        device          = device,
+        device          = selected_device,
         tensorboard_log = f"{save_dir}/logs/{algorithm}_{'bd' if bd_mode else 'generic'}",
         learning_rate   = 3e-4,
-        n_steps         = 2048,
-        batch_size      = 64,
+        n_steps         = n_steps,
+        batch_size      = batch_size,
         gae_lambda      = 0.95,
         gamma           = 0.99,
         clip_range      = 0.2,
@@ -233,7 +244,7 @@ def train_algorithm(
     np.random.seed(42)
     torch.manual_seed(42)
 
-    print(f"\n  Starting {algorithm.upper()} training on {device}...")
+    print(f"\n  Starting {algorithm.upper()} training on {selected_device}...")
     t0 = time.time()
     callback = ValueNormalizationCallback()
     model.learn(total_timesteps=total_timesteps, progress_bar=True, callback=callback)
@@ -260,6 +271,12 @@ def main():
     parser.add_argument("--bd_mode",    action="store_true",       help="Enable BD network parameters")
     parser.add_argument("--safety",     type=lambda x: str(x).lower() == 'true', default=True, help="Enable Safety Shield")
     parser.add_argument("--timesteps",  type=int, default=100_000, help="Training timesteps")
+    parser.add_argument("--n_envs",     type=int, default=10,      help="Number of parallel rollout environments")
+    parser.add_argument("--n_steps",    type=int, default=2048,    help="PPO rollout horizon per environment")
+    parser.add_argument("--batch_size", type=int, default=64,      help="PPO minibatch size")
+    parser.add_argument("--device",     choices=["auto", "cpu", "cuda"], default="auto", help="Training device")
+    parser.add_argument("--death_masking", type=lambda x: str(x).lower() == 'true', default=True,
+                        help="Keep finished agents masked with zero observations")
     parser.add_argument("--episodes",   type=int, default=20,      help="Episodes for random baseline")
     args = parser.parse_args()
 
@@ -291,6 +308,11 @@ def main():
             bd_mode         = args.bd_mode,
             safety          = args.safety,
             total_timesteps = args.timesteps,
+            n_envs          = args.n_envs,
+            n_steps         = args.n_steps,
+            batch_size      = args.batch_size,
+            device          = args.device,
+            death_masking   = args.death_masking,
         )
 
 
