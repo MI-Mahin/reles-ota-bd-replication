@@ -4,7 +4,34 @@ This file tracks the major implementation updates for the ReLES-OTA replication 
 
 ---
 
-## 2026-07-09 — Git Merge Conflict Resolution, Argument Fixes & Reward Rescaling
+## 2026-07-09 (Session 2) — PPO Hyperparameter Tuning & Unique Seeding
+
+### Context
+With the rescaled reward function, the score improved to `−193.21` (an order of magnitude better than the initial `−9000` levels). However, further optimization was required to converge toward the benchmark target of `−40.0`. Analysis revealed that the PPO training gradients were noisy due to an undersized batch size relative to the rollout size, and all seeds were duplicating the exact same trajectory due to a hardcoded random seed in the training script.
+
+### Completed Work
+
+#### 1. PPO Hyperparameter Tuning (`config.py` & `train_mappo.py`)
+- **Increased `batch_size`**: Changed the default from `64` to `512` to provide stable gradient updates over the large 20,480-transition rollout buffer (`n_envs=10` × `n_steps=2048`).
+- **Increased `ent_coef`**: Raised the entropy coefficient from `0.01` to `0.02` to promote early exploration of block update ordering and prevent premature policy convergence.
+- **Explicit `n_epochs`**: Wired `n_epochs=10` through the training process to ensure multiple optimization epochs per rollout buffer collection.
+
+#### 2. Unique RNG Seeding (`train_mappo.py` & `main.py`)
+- **Per-Seed Seeding**: Replaced the hardcoded random seeds (`42` for both numpy and torch) in `train_mappo.py` with the loop index `seed` passed down from `main.py`. 
+- **Genuine Trajectories**: Each of the parallel seeds now starts from a unique initialization and experiences different environmental randomness, providing proper statistical divergence for confidence interval and p-value computations.
+
+#### 3. Command Line & Web UI Integration (`main.py` & `web_ui.py`)
+- **Added Argparse Flags**: Exposed `--n_epochs` and `--ent_coef` in `main.py` to allow tuning directly from command-line arguments.
+- **Web UI Parameter Forwarding**: Updated the `build_command` helper in `web_ui.py` to parse and forward `n_epochs` and `ent_coef` (defaulting to `10` and `0.02` respectively) when executing the backend script.
+
+### Verification
+- Restarted `web_ui.py` successfully.
+- Verified that parameters are forwarded to `main.py` when initiating a run from the web dashboard.
+- Verified that each seed executes unique trajectories under the updated RNG seeding framework.
+
+---
+
+## 2026-07-09 (Session 1) — Git Merge Conflict Resolution, Argument Fixes & Reward Rescaling
 
 ### Context
 After a teammate attempted a Codex-assisted fix for a "Windows abort issue", `main.py` was left with unresolved Git merge conflict markers (`<<<<<<< HEAD`, `=======`, `>>>>>>>`), causing a `SyntaxError` whenever `web_ui.py` tried to import or invoke it. The terminal UI was unaffected because it runs `train_mappo.py` directly, but the web UI's terminal output field was completely broken.
