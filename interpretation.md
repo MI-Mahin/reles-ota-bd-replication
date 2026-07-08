@@ -152,12 +152,38 @@ than ~1 unit over 50,000 steps). Training past convergence gives diminishing ret
 
 ### Benchmark targets (from `config.py`)
 
+The reward signal is the **negative fleet cost** — the total encoding + transmission
+bytes paid by all agents in an episode. Closer to zero = lower cost = better policy.
+Here is the full return scale for orientation:
+
+| Policy | Approx. Mean Return | Meaning |
+|---|---|---|
+| Random | −300 to −500 | No strategy; wastes memory and bandwidth |
+| IPPO baseline | ~−110 | Independent learning, no cooperation |
+| MAPPO target | ~−60 | Centralised critic helps coordination |
+| FP3O target | ~−20 to −25 | Specialised heads + safety = optimal |
+| Phase 1 PPO (single-agent, generic) | ~−18 | Upper bound reference from Phase 1 |
+| Phase 1 PPO (single-agent, BD) | ~−35 | BD-condition reference |
+
+A model is **deployment-ready** when:
+
 ```python
 BENCHMARK_CFG = dict(
-    target_return_bd    = -40.0,   # fleet mean return must exceed this for BD conditions
-    target_return_generic = -20.0, # for generic (non-BD) conditions
-    p_value_threshold   = 0.05,    # must be statistically better than IPPO
-    max_shield_activation_rate = 0.05,  # safety shield should fire < 5% of steps
+    target_return_generic  = -25.0,   # 4 agents, 16 blocks, generic network
+    target_return_bd       = -40.0,   # Bangladesh congestion conditions
+    min_improvement_over_ippo_pct = 50.0,  # FP3O must be ≥50% better than IPPO
+    p_value_threshold      = 0.05,    # Welch t-test vs IPPO must be significant
+    max_shield_activation_rate = 0.05,  # CBF shield fires < 5% of steps
+)
+```
+
+> **Note on current results:** The leaderboard shows FP3O at −18.44 which already
+> exceeds the −40 BD target. This is because the current seed returns come from
+> **placeholder mock data** (real model evaluation is not yet wired in; see `main.py`
+> TODO comment). The p-value shows `nan` because 9/10 seeds in the mock data have
+> identical values, causing `scipy.stats.sem = 0`. Once real per-seed evaluation
+> (running `model.predict()` in a test env) is implemented, results and p-values
+> will reflect true training performance.
 )
 ```
 
