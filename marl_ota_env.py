@@ -370,7 +370,7 @@ class MultiAgentOTAEnv(ParallelEnv):
         # Use safety threshold from config; alpha=0.5 scales the safety margin
         safety_frac = SAFETY_CFG["memory_budget_frac"]  # e.g. 0.85
         alpha = 0.5
-        M_limit = self.n_agents_total * self.n_blocks * self.block_size * 2.0 * mem_budget * (1 - safety_frac)
+        M_limit = self.n_agents_total * self.n_blocks * self.block_size * 2.0 * mem_budget * safety_frac
 
         def _eval_coalition(S):
             S_overhead = {a: proposed_overhead[a] for a in S}

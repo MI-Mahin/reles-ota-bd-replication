@@ -4,6 +4,24 @@ This file tracks the major implementation updates for the ReLES-OTA replication 
 
 ---
 
+## 2026-07-09 (Session 3) — Safety Shield Bug Fix (Memory Limit Inversion)
+
+### Context
+Following the PPO hyperparameter tuning and unique seeding fixes, the mean episode return improved to `−47.49` (only 7.49 away from the `−40.0` target). However, the evaluation flagged a safety violation: the shield activation rate was `50.52%`, far exceeding the allowed `5.0%` benchmark threshold. 
+
+### Completed Work
+
+#### 1. Safety Limit Correction (`marl_ota_env.py`)
+- **Fixed Memory Threshold Inversion**: Located a bug in the calculation of `M_limit` where `(1 - safety_frac)` was used instead of `safety_frac`. 
+- **Restored Actual Budget Capacity**: With `safety_frac = 0.85` (override triggered when usage > 85% of capacity), this inversion restricted the fleet's total memory allowance to only **15%** of the budget. Consequently, the safety shield was forced to intervene on almost every step once the fleet passed the 15% mark, over-riding actions to no-ops and degrading returns.
+- **Changed to `safety_frac`**: Updated line 373 of `marl_ota_env.py` to correctly multiply capacity by `safety_frac`, restoring the 85% memory budget limit.
+
+### Verification
+- Safety shield activation rate is expected to drop significantly below `5.0%` as the fleet is no longer penalized at the 15% usage mark.
+- The model will have more freedom to choose efficient operations (e.g. delta compression), allowing the returns to comfortably cross the `−40.0` benchmark.
+
+---
+
 ## 2026-07-09 (Session 2) — PPO Hyperparameter Tuning & Unique Seeding
 
 ### Context
