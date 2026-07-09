@@ -72,7 +72,7 @@ TRAIN_CFG = dict(
     gae_lambda     = 0.95,
     gamma          = 0.99,
     clip_range     = 0.2,
-    ent_coef       = 0.05,   # higher entropy to explore cheap Copy ops early; tune down once converging
+    ent_coef       = 0.01,   # lower entropy allows PPO to converge on valid block selections
     vf_coef        = 0.5,
     max_grad_norm  = 0.5,
 

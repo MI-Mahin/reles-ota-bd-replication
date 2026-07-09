@@ -133,7 +133,7 @@ def train_algorithm(
     n_steps: int         = 2048,
     batch_size: int      = 512,
     n_epochs: int        = 10,
-    ent_coef: float      = 0.02,
+    ent_coef: float      = 0.01,
     device: str          = "auto",
     death_masking: bool  = True,
     seed: int            = 42,

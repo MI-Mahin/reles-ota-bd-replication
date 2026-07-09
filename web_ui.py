@@ -217,7 +217,7 @@ def build_command(payload: dict) -> list[str]:
         "--n_epochs",
         str(int(payload.get("n_epochs", 10))),
         "--ent_coef",
-        str(float(payload.get("ent_coef", 0.05))),
+        str(float(payload.get("ent_coef", 0.01))),
         "--device",
         payload.get("device", "auto"),
         "--bd_mode",

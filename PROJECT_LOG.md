@@ -18,7 +18,7 @@ After correcting the safety-shield memory limit (Session 3), the score regressed
 
 #### 2. Training Depth (`config.py` & `web_ui.py`)
 - **`total_timesteps`**: Increased default from `500,000` to `1,000,000` per seed. At 500k with 10 envs and 2048 n_steps, the model completes ~24 rollout collections — marginal for convergence on a multi-agent problem.
-- **`ent_coef`**: Raised from `0.02` to `0.05` to encourage early exploration of the action space. FP3O needs to discover that Copy operations (low cost) dominate Modify+Backup (5× higher cost), which requires broad initial exploration.
+- **`ent_coef`**: Set to `0.01` (lowered from experimental high levels). When entropy is set too high (e.g. `0.05`), PPO is forced to act randomly to maximize entropy, ignoring the mask observation and repeatedly choosing invalid actions (leading to step limit truncation at `−190.05`). Restoring `0.01` enables stable convergence on selecting valid, uncompleted blocks.
 
 ### Expected Outcome
 With the progress bonus and tighter invalid-action penalty, the policy should now learn to:
